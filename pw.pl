@@ -5,6 +5,8 @@ unless ( @ARGV ) {
     
 Query the Programmable Web API to get data on APIs. 
 
+$0 [api] [--password] [--gdrive]
+
 USAGE
 exit;
 }
@@ -21,12 +23,14 @@ use JSON::Parse qw(json_to_perl json_file_to_perl valid_json);
 local $, = "\t";
 local $\ = "\n";
 
+my $tag = time;
+
 ##################################################
 # vars 
 ##################################################
 
-my $api_base_url = 'http://api.programmableweb.com/apis/'; # ?apikey=;
-my $api_params='?alt=json&apikey=';
+my $target='apis';
+my $dir_local = 'data';
 
 my $mysql_db = 'api_keys';
 my $mysql_table = 'lookup';
@@ -36,14 +40,21 @@ my $json_local = undef;
 
 my $query = 'google-maps';
 my $password=undef;
+my $page=0;
 
 GetOptions(    
     'gdrive' => \$gdrive, 
     'password=s' => \$password, # get api_key from google drive insead of local DB 
-    'debug' => \$debug,
+    'debug=i' => \$debug,
     'json_dump' => \$json_dump,
-    'json_local' => \$json_local
+    'json_local' => \$json_local,
+    'page=i' => \$page,
+    'target=s' => \$target
     );
+
+$target = ( $target =~ /^m/i ? 'mashups' : 'apis' );
+my $api_base_url = 'http://api.programmableweb.com/'.$target.'/'; # ?apikey=;
+my $api_params='?alt=json&apikey=';
 
 # test json_to_perl code 
 
@@ -63,7 +74,7 @@ JSONTEST
     
 my $perl = json_to_perl ( $json_test );
 print $json_test;
-print valid_json($json_test), ref($perl), @{ (values %{$perl})[0] };
+print valid_json($json_test), ref($perl), @{ (values %{$perl})[0] } if $debug >=2;
 die unless valid_json($json_test);
 
 my @keys=qw(
@@ -83,6 +94,7 @@ ssl
 limits
 terms
 company
+dateModified
 );
 
 ##################################################
@@ -108,7 +120,7 @@ if ( $gdrive ) {
     print $mysql_query, $api_key if $debug;    
 }
 
-mkdir('data') if $json_dump && ! -e 'data';
+mkdir( $dir_local ) if $json_dump && ! -e $dir_local;
 
 ##################################################
 # Access PW API and pull down records.
@@ -116,17 +128,16 @@ mkdir('data') if $json_dump && ! -e 'data';
 # As of June 14th 2013 there are 468 pages.
 ##################################################
 
-my $page=0;
 my $pw_entries=1000;
-open($fh, ">pw.tab");
+open($fh, ">$target".".".$tag.".tab");
 print {$fh} '#'.$keys[0],@keys[1..$#keys];
 
 until ( $pw_entries < 20 ) { 
     $page++;
-    my $json_file = "data/pw.".$page.".json";
+    my $json_file = $dir_local.'/'.join('.', $target, $page, 'json');
     my $query_url = join( '/', $api_base_url, '' ).$api_params.$api_key.'&page='.$page; 
     print $page, $json_file, $query_url if $debug >=2;
-    
+
     my $json_resp;
     if ( $json_local && -e $json_file ) {
 	# $json_hash = json_file_to_perl( $json_file );    
@@ -136,7 +147,8 @@ until ( $pw_entries < 20 ) {
 	close($fhin);
 	
     } else {
-	my $json_resp = get( $query_url );
+	$json_resp = get( $query_url );
+	die unless $json_resp;
 	print $json_resp if $debug >= 2;	
 	
 	if ( $json_dump ) {
@@ -147,26 +159,90 @@ until ( $pw_entries < 20 ) {
     }
     
     # clean up PW JSON 
-    $json_resp =~ s/^pwfeed\s+\=\s+//;    
-    $json_resp =~ s/\'/\"/g;
-    $json_resp =~ s/\,(\s+\n\s+\]\,)/\1/mg; # this is an ugly fix! 
-    $json_resp =~ s/\}\,(\n\]\s+\})\;/\}\1/mg;
-    $json_resp =~ s/\\\&apos\;//;
-    # 
+    $json_clean = &make_compliant_JSON( $json_resp );
+    
+    # still get unclean JSON from PW sometimes so throw a panic...
 
-    my $json_hash = json_to_perl( $json_resp );    
-    my $pw_entries = scalar( @{ $json_hash->{'entries'} } );
-    print $page, $json_file, $query_url, $pw_entries if $debug;
+    my $json_hash;
+    eval { $json_hash = json_to_perl( $json_clean ); };
 
+    my $fail_count;
+    while ( $@ ) {
+	warn $@;
+	$@ =~ /line\s+(\d+)/;
+	my $line = $1;
+	my @lines = split/\n/, $json_clean;
+	delete $lines[ $line-1 ];
+	$json_clean=join("\n", @lines);
+	eval { $json_hash = json_to_perl( $json_clean ); };
+	print $page, $json_file, $query_url, ++$fail_count;
+	print `head -$line $json_file | tail -1`;
+    }
+    
+    #
+    
+    $pw_entries = scalar( @{ $json_hash->{'entries'} } );
+    print $page, $json_file, $query_url, ($pw_entries || 0) if $debug;
+    
     foreach my $pw_api_rec ( @{ $json_hash->{'entries'} } ) {
 	my @values;
 	foreach my $rec_key ( @keys ) {
-	    my $pw_api_val = $pw_api_rec->{$rec_key};	    
+	    my $pw_api_val = $pw_api_rec->{$rec_key};
+	    if ( $rec_key eq 'dateModified' || $rec_key eq 'updated' ) {
+	        die( "Regex: ".$pw_api_val ) unless $pw_api_val =~ /^(\d+)\-(\d+)\-(\d+)/;
+		push @values, $1;
+		my $days = (2013-$1)*365 + (6-$2)*30 + (21 - $3)*1;
+		push @values, $days;
+	    }
 	    push @values, ( ref($pw_api_val) ? join(';', @{$pw_api_val}) : $pw_api_val );
 	    $values[-1] =~ s/\n+/\s/g; # 
 	}
 	$values[3]="__NONE__" unless $values[3];
 	print {$fh} @values ;
     }
+
+    last if  $pw_entries < 20;
 }
 
+exit;
+
+sub make_compliant_JSON {
+    my $json_now = shift @_;
+
+    $json_now =~ s/[\cM|\n]+/\n/g; # strip windows line ends
+
+    ##########################################
+    # 
+    ##########################################
+
+    # not sure why perl fails... 
+    $json_now =~ s/\|/:/g;
+    my $before='before.'.$tag;
+    my $after='after.'.$tag;
+    open(BEFORE, ">$before");
+    print BEFORE $json_now;
+    close BEFORE;
+    system('sed s/\|/\:/g '."$before > $after");    
+    open(AFTER, "$after");
+    local $/ = "DEVIN_SAYS_STOP";
+    my $json_new = <AFTER>;
+    close AFTER;
+    system("rm $before $after") unless $debug;
+
+    ##########################################
+    # 
+    ##########################################
+
+    # file start 
+    die($json_new) unless $json_new =~ s/^q?pwfeed\s+\=\s+//;
+    # json list behaviour 
+    $json_new =~ s/\,(\s+\n\s+\]\,)/\1/mg; # this is an ugly fix!     
+    # file end 
+    $json_new =~ s/\}\,(\n\]\s+\})\;/\}\1/mg; # api file end if contains records 
+    $json_new =~ s/^(\]\s+\})\;/\1/mg;  # api file end if no records 
+    # other violations 
+    die($json_new) unless $json_new =~ s/\'/\"/g;
+    $json_new =~ s/\\\&apos\;//g;
+    
+    return $json_new;
+}
