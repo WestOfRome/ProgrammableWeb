@@ -1,11 +1,37 @@
 #!/usr/bin/perl 
 
+#######################################################################
+# pw.pl -- Query the Programmable Web API 
+# Copyright (C) 2013  Devin Scannell
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#######################################################################
+
 unless ( @ARGV ) {
     print <<USAGE;
     
-Query the Programmable Web API to get data on APIs. 
+    Query the Programmable Web API/Mashup APIs, parse the JSON
+    and format as a tab delimited file. 
 
-$0 [api] [--password] [--gdrive]
+    $0 [api|mashup] [--password=s] [--gdrive] [--page=i]
+    [--json_dump] [--json_local]
+
+    --password : Provide MySQL/GDrive password if required 
+    --gdrive : Use GDrive instead of local MySQL DB
+    --page : PW API output page to download 
+    --json_dump : write JSON formatted pages to local files
+    --json_local : use local JSON files instead of API if available
 
 USAGE
 exit;
@@ -29,7 +55,7 @@ my $tag = time;
 # vars 
 ##################################################
 
-my $target='apis';
+#my $target='apis';
 my $dir_local = 'data';
 
 my $mysql_db = 'api_keys';
@@ -49,10 +75,10 @@ GetOptions(
     'json_dump' => \$json_dump,
     'json_local' => \$json_local,
     'page=i' => \$page,
-    'target=s' => \$target
+#    'target=s' => \$target
     );
 
-$target = ( $target =~ /^m/i ? 'mashups' : 'apis' );
+$target = ( $ARGV[0] =~ /^m/i ? 'mashups' : 'apis' );
 my $api_base_url = 'http://api.programmableweb.com/'.$target.'/'; # ?apikey=;
 my $api_params='?alt=json&apikey=';
 
